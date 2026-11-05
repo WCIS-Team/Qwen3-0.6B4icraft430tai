@@ -1,0 +1,15 @@
+Qwen3-0.6B port to iCraft 30TAI (ZG330 / FMQL30TAI)
+
+This repository is a cross-platform port/deployment of the Qwen3-0.6B model onto the
+iCraft 30TAI (ZG330) NPU. Original model:
+
+  Qwen3-0.6B  (Copyright (c) Alibaba Cloud. All Rights Reserved.)
+  Licensed under the Apache License, Version 2.0.
+  https://huggingface.co/Qwen/Qwen3-0.6B
+  https://modelscope.cn/models/Qwen/Qwen3-0.6B
+
+Modifications for the iCraft ZG330 cross-platform port (ONNX graph rewrites, iCraft
+compile scripts, board-side drivers and probes, measurements) are made by the WCIS
+project. Model weights and tokenizer resources are NOT distributed here; they are
+re-fetchable from the upstream repositories above (see README, "体积件与再获取指引").
+The full Apache-2.0 license text is in ./LICENSE.

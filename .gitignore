@@ -1,0 +1,67 @@
+# 出库规则沿用主 repos 库那套（凭据硬闸＋体积类）。
+# 需要单件进库时用 `git add -f <路径>` 放行。
+
+# ---- 体积类：位流、磁盘镜像、压缩包 ----
+*.bit
+*.bin
+*.img
+*.elf
+*.pb
+*.tar
+*.tar.xz
+*.tar.gz
+*.tgz
+*.zip
+*.gz
+*.rar
+*.7z
+
+# ---- 模型权重与编译产物：源上有正本或可复跑，不随库分发 ----
+# model.onnx(248 KB) / model.onnx.data(1.2 GB) / Q3V1-decoder_ZG.raw(1.6 GB) 都在这一条外面。
+*.onnx
+*.onnx.data
+*.raw
+*.safetensors
+*.pt
+*.pth
+*.whl
+*.a
+*.lib
+*.o
+
+# ---- 分词件：整颗可从上游仓库重取（11 MB 级），只给指针与 md5 门禁 ----
+tokenizer.json
+vocab.json
+merges.txt
+
+# ---- iCraft 构建产物与中间件目录（体积大、可复跑）----
+*.runs/
+*.cache/
+*.sim/
+*.gen/
+.gen_q3*/
+feed_rand/
+*.ftmp
+*.log.bak
+
+# ---- Python 虚拟环境与便携运行时 ----
+venv/
+.venv/
+runtime/
+python3*/
+__pycache__/
+*.pyc
+
+# ---- 编辑器与杂项 ----
+.idea/
+.vscode/
+Thumbs.db
+Desktop.ini
+
+# ---- 凭据载体：永不进库 ----
+board-ssh.py
+board-put.py
+.env
+**/10_etc.tar.gz
+**/11_root_home_vendor.tar.gz
+**/53_rc_local_and_login.txt

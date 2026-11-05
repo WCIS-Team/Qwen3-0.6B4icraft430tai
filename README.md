@@ -1,0 +1,150 @@
+# Qwen3-0.6B4icraft430tai · 迁移交付件
+
+> 这条线的仓：把 `Qwen/Qwen3-0.6B` 推到 iCraft（30TAI／ZG330）的 `_ZG` 件，量完 PC 侧数值，再把件送上板做完四档预检。**结构几何＝随库 `board/config.json` 实测键值**：28 层／`hidden_size` 1,024／`num_attention_heads` 16／`num_key_value_heads` 8／`head_dim` 128／`intermediate_size` 3,072／`vocab_size` 151,936（含 pad）／`tie_word_embeddings` true／`torch_dtype` bfloat16／`max_position_embeddings` 40,960；分词侧＝`tokenizer.json` 里 BPE **vocab 151,643＋merges 151,387＋added tokens 26**、`normalizer` NFC。**参数量按上游标注 ≈ 0.6 B，本仓没有逐张量复算过**。
+> **图上编译与逐 token 数值已闭环；板上生成从未执行**（写本页时仍是这个状态，见「状态」节）。
+> 全部读数与流程＝本目录 [`pipeline.md`](pipeline.md)（正本，§0～§9：现在到哪一步／主机分工／阶段 1～6（含 §4b mask 补丁）／产物清单／还没做）；**本页只做索引、来源、许可与上手，不复制读数表**。
+
+## 来源与许可
+
+| 面 | 出处 | 许可 |
+|---|---|---|
+| 模型本体 | `Qwen/Qwen3-0.6B`（ModelScope `https://modelscope.cn/models/Qwen/Qwen3-0.6B`／HuggingFace `https://huggingface.co/Qwen/Qwen3-0.6B`，取法＝官方工具，见下） | Apache-2.0（Copyright Alibaba Cloud） |
+| 结构与几何读数 | 上游 `config.json`（28 层／`num_key_value_heads` 8／`head_dim` 128／`vocab_size` 151,936），不是从目录名或加载行为推的 | 同上 |
+| 导出与编译工具链 | iCraft **3.39.0** CLI（ZG 档 imodel 只能在 Windows CLI 出）＋ `genai` 导出（fp16/cuda 档） | 厂商专有，**不随本仓分发**；本仓只放我方脚本与配置 |
+| 板端运行时 | FMSH 悟净 FMQL30TAI676H（Ubuntu 20.04／Python 3.8.10／ZG330 NPU）；`modelzoo_utils` 来自厂商 Qwen2 demo 包 | 厂商专有，不随本仓分发 |
+| **本仓所有我方件**（改写脚本、`_ZG.json`、板侧驱动与探针、读数留底） | WCIS 项目 | Apache-2.0，见 [`LICENSE`](LICENSE) 与 [`NOTICE`](NOTICE) |
+
+上游取回（官方工具，不用 `curl`／`wget`）——[`compile/dl_qwen3.py`](compile/dl_qwen3.py) 就是这条命令的现役脚本，改 `local_dir` 即可：
+
+```bash
+python -c "from modelscope import snapshot_download; \
+print(snapshot_download('Qwen/Qwen3-0.6B', local_dir='./Qwen3-0.6B', allow_patterns=[ \
+'config.json','generation_config.json','tokenizer_config.json','tokenizer.json', \
+'vocab.json','merges.txt','special_tokens_map.json','chat_template.json','*.safetensors']))"
+```
+
+## 不随本仓分发的东西，以及怎么再拿到
+
+体积件与"源上有正本"的分词件一律挡在库外（[`.gitignore`](.gitignore)），下面这张表就是取回合同：**逐件带字节数与 md5，拿到后先对上这两个数再用**。
+
+| 件 | 字节数 | md5 | 为什么不进库 | 怎么再拿到 |
+|---|---|---|---|---|
+| `board/tokenizer.json` | 11,422,654 | `6423133b9cc1a2077b57822c30c211aa` | 上游重取件 | 上游仓库根目录那颗；**与板上现役那颗不是同一份**（见「已知坑」第 2 条） |
+| `export/q3i_fp16_cuda/tokenizer.json` | 11,422,650 | `0fa489dfe491c3835067a33b4d7dea6e` | 同上 | 导出目录里那份副本 |
+| `export/q3i_fp16_cuda/model.onnx` | 248,431 | `450ada9d95f7d5453e5b3b2b45dbb69f` | 导出产物，可复跑 | 按 [`pipeline.md`](pipeline.md) §2 用 genai 导出（fp16/cuda 档） |
+| `export/q3i_fp16_cuda/model.onnx.data` | 1,202,585,600 | `b2e1e072856a8254df728cb63879eee0` | 权重体，>1 GB | 同上（`.onnx` 与 `.data` 成对产出） |
+| `Q3V1-decoder_ZG.raw`（板端参数体） | 1,603,399,624 | `1081ddd7222dc2cadd5bee8dc27b781f` | >1.5 GB，GitHub 单文件上限 100 MB 会拒整笔 push | 两条路：① 从板上 `/root/qwen3/jr_path/decode/Q3V1-decoder_ZG.raw` 取回；② 按 [`pipeline.md`](pipeline.md) §4 重跑 `generate` 出件。**判据不变**：`.raw` 的 md5 必须等于库里 `board/Q3I-decoder_ZG.json` 内那处 `params_md5` |
+| 五段中间件（parsed／optimized／quantized／adapted 的 json＋raw） | 各 1.5 GB 级 | — | 体积、可复跑 | 编译根按 [`pipeline.md`](pipeline.md) §4 重跑；cwd 必须是 `compile/` |
+| 上游权重快照（`*.safetensors`） | 1.2 GB 级 | — | 上游重取件 | 上面 `modelscope` 那条命令 |
+
+**库里唯一别处拿不到的产物**＝`board/Q3I-decoder_ZG.json`（2,679,170 B／`47699b3fd3d87d9056169d9072517f38`）：图上编译的输出、上游没有这颗、也是重编一次的产物名，2.7 MB 直接进库。
+
+## ⚠️ 板侧两条运行依赖（装不上就白跑）
+
+### 1. 分词：`tokenizers` 要 ≥ 0.15，实测用 0.20.3
+
+板上出厂那颗 `tokenizers 0.13.3` 读不了这颗 `tokenizer.json`——`Tokenizer.from_file` 直接报
+`data did not match any variant of untagged enum ModelWrapper`；升到 0.20.3 后**同一颗文件**直接可读。
+
+失败点用最小用例锁在 `model.merges` 的**序列化格式**上（2026-11-04 板上跑 `tok_bisect.py`；2026-11-06 本机直读四颗文件核对）：
+
+| 文件 | `model.merges` 写法 | `ignore_merges` | 板上 0.13.3 |
+|---|---|---|---|
+| 厂商 Qwen2 那颗（`1c74fd33…`，151,387 条） | `"Ġ Ġ"` 空格连接字符串 | 无此键 | **读通**（demo 真跑过本机分词） |
+| 板上现役这颗 Qwen3（`7875a23b…`，151,387 条） | `["Ġ","Ġ"]` 成对数组 | `False` | 报 `ModelWrapper` |
+| 库里这颗 Qwen3 留档（`6423133b…`） | 成对数组 | `False` | 同上 |
+| 同项目 ERNIE 那颗（182,926 条） | 成对数组 | `False` | 同上 |
+| 板上合成用例 | `[["a","b"]]` ⇒ FAIL；`[]` ⇒ OK | 不带 | 两半都是当场跑的 |
+
+⇒ **A（实测）**：0.13.3 认不了成对数组写法的 `merges`，升版即解，与文件本身好坏无关。
+⇒ **未取证**：`model.ignore_merges` 这个键（上表里两颗新文件有、厂商那颗没有）从没被单独摘出来对照过，所以"只差 merges 格式"这句写不到 A。补这一格只要 30 秒——把那颗文件摘掉 `ignore_merges` 再加载一次：
+
+```bash
+python3 - <<'EOF'
+import json
+from tokenizers import Tokenizer
+d = json.load(open('/root/qwen3/config/qwen3/tokenizer.json', encoding='utf-8'))
+d['model'].pop('ignore_merges', None)
+json.dump(d, open('/tmp/no_im.json', 'w', encoding='utf-8'))
+try:
+    Tokenizer.from_file('/tmp/no_im.json'); print('no ignore_merges -> OK')
+except Exception as e:
+    print('no ignore_merges -> FAIL', str(e)[:90])
+EOF
+```
+
+两条脚本随库：[`board/tok_bisect.py`](board/tok_bisect.py)（就是 11-04 板上跑的那份，逐字未改，`merges` 两半是它里面的合成用例）＋[`board/tok_load_test.py`](board/tok_load_test.py)（下面验收那 7 组样例）。
+
+装 0.20.3（cp38／aarch64；PyPI 上带 cp38 aarch64 轮子的最后几版＝0.15.2／0.19.1／0.20.3，**0.21 起无 cp38**）：
+
+```bash
+# 有网的机器上取轮子（项目内部留底那份：2,893,923 B / fc747d88688d1b1609b670feb04ce53a）
+python3 -m pip download "tokenizers==0.20.3" --no-deps --only-binary=:all: \
+  --python-version 3.8 --implementation cp --abi cp38 --platform manylinux_2_17_aarch64 -d whl
+# 板上（root，离线装）
+python3 -m pip install --no-index --no-deps tokenizers-0.20.3-cp38-cp38-manylinux_2_17_aarch64.manylinux2014_aarch64.whl
+```
+
+**验收**（2026-11-04 板上实跑）：`load OK`，7 组样例 ids 与本机 `tokenizers 0.23.3` 逐字相同——`你好，世界`→`[108386, 3837, 99489]`；`<|im_start|>user\nHi<|im_end|>`→`[151644, 872, 198, 13048, 151645]`。
+
+对照：同项目 ERNIE 那条线没升 `tokenizers`，改用纯标准库实现（`board/e41_tok.py`＋预打数据包），两条路都通，**别混着用**。
+
+### 2. NPU 绑定：板上 `import icraft` 要拼一颗 3.39 的包
+
+板上 pip 里的 `icraft` 是 **3.33.1**（`xir.so` 是 2024-12 的），系统 `.deb` 里的库是 **3.39.0**（与出这颗 `_ZG` 件的 CLI 同版）。旧绑定引用 `icraft::xir::Params::load()`，新版 `libicraft_xir.so` 里已无此符号 ⇒ 直接 `import icraft` 报 undefined symbol。
+
+解法（板上已实测通）：用 **3.39 的 `.so` ＋ 3.33 的 `__init__.py`／`.pyi`** 拼一个包放在 `/root/icraft39`，再 `PYTHONPATH=/root/icraft39`（本仓 `board/npuserv_adapter.py` 里已 `sys.path.insert`，不必每次设环境变量）。`.so` 正本在板子的系统包里，本仓不带（`*.so`／`*.whl` 在 `.gitignore` 里）。
+
+## 布局
+
+| 子目录／件 | 内容 | 入库 |
+|---|---|---|
+| `pipeline.md` | 流程正本（§0～§9，含 §4b）：现在到哪一步／主机分工／阶段 1 导出／阶段 2 两处结构改写／阶段 3 五段编译／§4b mask 补丁／阶段 4 PC 前向出 token／阶段 5 数值校验与口径实验／阶段 6 上板（含门禁）／产物清单／还没做 | 是 |
+| `compile/` | 本线现役脚本 **24 件**＝18 `.py`＋4 `.ps1`＋2 `.toml`：`dl_qwen3.py`（上游取回）、`meta_variant.py`／`detranspose_embed.py`／`padfix.py`／`patch_mask0.py`（图改写）、`mk_parse_toml.py`／`Q3I_parse.toml`／`Q3I_gen_mask0zg.toml`（编译配置）、`host_gen.py`（本机 Host 后端逐级链驱动）、`cmp_chain.py`／`cmp_logits.py`／`verify_onnx.py`／`ref_hf.py`（数值对照）、`dump_mask.py`／`masktrace.py`／`fmtrace.py`／`so_probe.py`／`so_ctx.py`／`decode_ids.py`／`vendorize.py`（清点与探针）、`gen_fixed.ps1`／`fixcheck_run.ps1`／`variants_run.ps1`／`setup-school.ps1`（跑批） | 是 |
+| `board/` | 上板件与板侧脚本 9 件：`Q3I-decoder_ZG.json`（2.7 MB，图上编译产物）、`config.json`（模型结构，本页上面那行几何数字就是从它读的）、`npuserv_adapter.py`（npuserv 单槽服务里的 Qwen3 adapter）、`qwen_board.py`（paramiko 长跑执行器，**口令从环境变量取、本仓这份不带明文**）、`mem_watch.sh`（心跳采样）、`sercap.ps1`／`ser_probe.ps1`（串口兜底取证）、`tok_bisect.py`／`tok_load_test.py`（分词依赖那两条证据脚本） | json／脚本入库，`tokenizer.json` 否 |
+| `patch/` | 两支板侧驱动：`q3_infer_board.py`（本仓这份实算 **11,109 B／`1ea294244363291747988d871085b848`**＝与 HA4FPAI 里那颗同 md5；专为 Qwen3 写的 decode-only 驱动，28 层／8 KV head／head_dim 128，`token_dynamic_fm` 喂 3 个 fp32。与 10-30 那版记账 10,586 B／`e2364dddefcafb40e8293b9b0ffab75a` 的差＝11-04 给 `:95`～`:99` 加的 tokenizer 加载兜底那五行，装上 0.20.3 后不再触发、留着无害）、`qwen3_infer_pad3.py`（23,602 B／`ce087fbcf3c5305ca0d41e3c3421e30a`，厂商驱动的同源改造副本；`:469` 的 chat template 仍是厂商 Qwen2 形，与本仓 `export/…/chat_template.jinja` 没对过） | 是 |
+| `export/q3i_fp16_cuda/` | genai 导出件里的小件 3 份：`chat_template.jinja`（4,256 B）、`genai_config.json`、`tokenizer_config.json` | 是 |
+| `ref/` | 数值基准留底：`padfix_mask0_25.json`、25 token 链的 `steps.json`／`tokens.txt` | 是 |
+| `LICENSE`／`NOTICE`／`.gitignore`／`MANIFEST.md5` | Apache-2.0 正文／来源声明／出库规则／逐件 md5 清单 | 是 |
+| `Q3V1-decoder_ZG.raw`、`model.onnx(.data)`、`tokenizer.json`、五段中间件、上游权重 | 见上面那张表 | **否**（体积件／可重取件） |
+
+## 上手（要在板上真跑，得推三件＋注册一条）
+
+1. **npuserv 服务端**：`npuserv/`（`server.py`＋`adapter_lib.py`＋`wire.py`＋`models.json`）——它在同项目的 HA4FPAI 仓里，本仓不带。
+2. **本仓两件**：`board/npuserv_adapter.py` 与 `patch/q3_infer_board.py`（后者 `:31` 的 `sys.path.append` 指向厂商 Python 运行时 `/root/qwen2/modelzoo_utils`，那颗目录下没有这份件）。
+3. **registry 条目**（`models.json` 里 `id`＝`qwen3-0.6b`）——板上路径版：
+
+   ```json
+   {
+     "id": "qwen3-0.6b",
+     "artifacts": {
+       "decode_json":     "/root/qwen3/jr_path/decode/Q3V1-decoder_ZG.json",
+       "decode_raw":      "/root/qwen3/jr_path/decode/Q3V1-decoder_ZG.raw",
+       "tokenizer":       "/root/qwen3/config/qwen3/tokenizer.json",
+       "modelzoo_utils":  "/root/qwen2/modelzoo_utils"
+     },
+     "defaults": { "max_new": 32, "stop_ids": [151645, 151643], "pos_rule": "vendor",
+                   "vocab_size": 151936, "n_layers": 28, "n_kv_heads": 8, "head_dim": 128,
+                   "max_decode_length": 512, "config_path": "/root/qwen3/config/qwen3" },
+     "env": { "PYTHONPATH": "/root/icraft39" }
+   }
+   ```
+
+4. **点火前三道门禁**（判据正本＝[`pipeline.md`](pipeline.md) §7，这里只列名字）：板上位流必须含 NPU（读 `/mnt/boot` 位流 md5，且要先 `mount -o ro`）、`CmaFree` 起跑值（CMA 是单一 256 MiB 池，与视频链同池，`udmabuf0` 开机就占走 128 MiB）、板子占用锁（同项目那台主机桌面上的 `113.txt` 要等于 `off`）。
+
+## 状态（诚实版）
+
+- **PC 侧**：五段编译全过、出 `Q3I-decoder_ZG` 件；Host 后端逐级链与校机 HF 基准对齐，`ref/` 那三份是 25 token 链的留底。**判据复算 PASS**：`.raw` 实算 md5 ＝ `.json` 内 `params_md5` ＝ 清单记账值三者逐字相等（10-28）。
+- **板侧（2026-10-14）**：三件（`.json`／`.raw`／`tokenizer.json`）SFTP 上板、两端 `md5sum` 逐字相同；就地四档预检 s1／s2／s3 全 `exit=0`，**s3 的 `apply` 实测 75.1 s** ⇒ 这颗 `_ZG` 件在 ZG330 上**完成过 NPU 编程**。
+- **没做的**：**生成那一步从未执行**——所以上板前置里"件内数值在 NPU 上对不对"这条还没答。本仓那两支驱动都写好未跑（`patch/q3_infer_board.py` 从未上板）。
+- **运行依赖已解**（2026-11-04 板上实测）：`import icraft`（`/root/icraft39`）通；`tokenizers` 升 0.20.3 后这颗 `tokenizer.json` 板上直接可读、ids 与本机逐字相同；npuserv 的 server 骨架在板上 import 通过、`/models` 应答正确。**`/load` 点火仍未做**。
+
+## 三条已知坑
+
+1. **件名不一致**：板上叫 `Q3V1-decoder_ZG.*`、库里叫 `Q3I-decoder_ZG.*`。10-28 逐字节核过：`.raw` 两边同为 `1081ddd7…`；`.json` 把板上那颗里唯一一处 `Q3V1` 换成 `Q3I` 后与库里这颗**逐字节相同** ⇒ 同一张图只差名字串。**按 `Q3I` 这名重推板＝把正本 raw 复制改名，不用重编**（`_ZG.json` 内没有 `.raw` 路径字段，只有 `params_md5`／`params_bytes`）。
+2. **`tokenizer.json` 有两颗、值不同**：库里留档那颗（`6423133b…`／11,422,654 B）与板上那颗（`7875a23b…`／11,418,266 B）**不是同一份**；板上那颗与厂商 Qwen2 导出目录里的、与本机 `compile/fmodel/T0/` 的那颗三者同 md5。要复现板上行为以**板上那颗**为准，别拿库里这颗对数。
+3. **首步（位置 0）的成因与本线不同**：本项目 ERNIE 那条线实测过"槽 0 是全零 pad、图真会去 attend 它"，修法＝token 0 连喂两次＋每步把槽 1 复制进槽 0。本仓 `patch/` 那两支驱动里 `padfix` 这条**在 Qwen3 上从未板上验证**，写成待验不是写成结论。
+
+## 相关（项目内部路径，外部读者可忽略）
+
+`wiki/PL/MOD/llm/qwen3-0.6b.md`（操作记录与对照表）／`wiki/PL/MOD/llm/Qwen3-Instruct按Qwen3配方迁移.md`（SOP）／`wiki/PL/MOD/llm/Qwen3按厂商Qwen2配方迁移.md`（原理与证据分级）／`wiki/PS/板端我方代码与产物台账.md`（板端逐件登记，`#208`～`#213` 是本线上板那批）。
