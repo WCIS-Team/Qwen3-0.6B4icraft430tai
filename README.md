@@ -137,7 +137,28 @@ python3 -m pip install --no-index --no-deps tokenizers-0.20.3-cp38-cp38-manylinu
 - **PC 侧**：五段编译全过、出 `Q3I-decoder_ZG` 件；Host 后端逐级链与校机 HF 基准对齐，`ref/` 那三份是 25 token 链的留底。**判据复算 PASS**：`.raw` 实算 md5 ＝ `.json` 内 `params_md5` ＝ 清单记账值三者逐字相等（10-28）。
 - **板侧（2026-10-14）**：三件（`.json`／`.raw`／`tokenizer.json`）SFTP 上板、两端 `md5sum` 逐字相同；就地四档预检 s1／s2／s3 全 `exit=0`，**s3 的 `apply` 实测 75.1 s** ⇒ 这颗 `_ZG` 件在 ZG330 上**完成过 NPU 编程**。
 - **没做的**：**生成那一步从未执行**——所以上板前置里"件内数值在 NPU 上对不对"这条还没答。本仓那两支驱动都写好未跑（`patch/q3_infer_board.py` 从未上板）。
-- **运行依赖已解**（2026-11-04 板上实测）：`import icraft`（`/root/icraft39`）通；`tokenizers` 升 0.20.3 后这颗 `tokenizer.json` 板上直接可读、ids 与本机逐字相同；npuserv 的 server 骨架在板上 import 通过、`/models` 应答正确。**`/load` 点火仍未做**。
+- **运行依赖已解**（2026-11-04 板上实测）：`import icraft`（`/root/icraft39`）通；`tokenizers` 升 0.20.3 后这颗 `tokenizer.json` 板上直接可读、ids 与本机逐字相同；npuserv 的 server 骨架在板上 import 通过、`/models` 应答正确。
+- **`/load` 已点火、但生成退化**（2026-11-06 板上实测，详见下节）：`/load` 成功（apply 171.5 s）、`/generate` 能出 token，但**输出恒定为同一 token，未达可用**；根因定位到 decode 步 KV 回喂（非 pos_rule、非 tokenizer）。**此项已搁置，交 Qwen 模型线。**
+
+## 板上首次运行与退化问题（2026-11-06，板 113）
+
+首次经 npuserv 真跑这颗件（走 registry、两条软链已建）。三组都"能加载、能出 token"，但生成退化：
+
+| 场景 | 加载 | 生成 | 结果 |
+|---|---|---|---|
+| ids=[9707,1879] max_new=8 decode:false | apply 171.5 s → ready | 13.7 s | ids 全是 `508`（8 个） |
+| text="你好" max_new=16 pos_rule=vendor | apply 170.9 s → ready | 30.0 s | 16 个 `198`（`\n`）×16 |
+| text="你好" max_new=16 pos_rule=uniform | apply 172.2 s → ready | 30.6 s | 16 个 `198`（**与 vendor 完全相同**） |
+
+**判据与结论**：
+
+1. **不是 tokenizer**：text 路径 prompt=9 token 正常编码、decode 也正常出文本（`"\n"×16`）。
+2. **不是 pos_rule**：vendor 与 uniform 两臂逐 token 相同（都退化到 `198`）。
+3. **是 decode 步 KV 回喂缺陷**：首 token 随 prompt 变（ids→508、text→198），其后恒定重复，说明解码步看不到已生成 token。对照代码：adapter vendor 臂**整块替换** KV，与 `patch/q3_infer_board.py:run_decode` 返回 `arrays[1:]` 整块替换一致；uniform 臂走 `kv[slot] = out[p]` **切片写回**；**两种结构完全不同却同错 ⇒ 缺陷在 KV feed/布局（`past_key_values.i.key/value` 的命名/形状/dtype，或 out 索引 `p` 的语义），不在更新策略**。
+
+**下一步（未做，需板端单元级调试）**：逐步 dump `past_key_values.*` 校验和与 `arrays[1:]` 的对应关系，对照 vendored `run_prompt`（写 `kv[i]=out[i+1]`）与 `run_decode`（`seq_pos=prompt_length+step-1`，疑似与切片写回 slot 有 off-by-one）定位真因；坑 3 的 `padfix`（槽 0 全零 pad）在 Qwen3 上也从未板上验证。**证据**：`workenv/ha-npu-ignite-2026-11-06/qwen3_ignite.log`、`q3_ab.log`、`worker_3682c7c9.log`。
+
+**状态**：`能加载、能出 token，未达可用`。2026-11-06 决定**搁置**，归 Qwen 模型线；npuserv 侧无改动。
 
 ## 三条已知坑
 
