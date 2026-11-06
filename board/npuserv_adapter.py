@@ -76,7 +76,8 @@ class Q3Engine(object):
             "declared_inputs": len(outputs), "past_inputs": len(outputs) - 2,
             "stop_ids": sorted(self.stop_ids), "pos_rule": self.rule,
             "position_rule": "token_dynamic_fm = [1, p, 0] (12 B); new entry lands at out[p]",
-            "read": "whole", "json": cfg.decode_json, "raw": cfg.decode_raw,
+            "read": "narrow slot only (2 KiB/tensor; kv_io.read_slot)",
+            "json": cfg.decode_json, "raw": cfg.decode_raw,
             "tokenizer": os.path.join(cfg.config_path, "tokenizer.json"),
             "verified": "never executed on board; 台账 #212 stops at apply, zero tokens",
         }
@@ -99,18 +100,12 @@ class Q3Engine(object):
             raise RuntimeError("position %d out of range for kv depth %d" % (p, self.kv_depth))
         ids = self.np.array([[token]], dtype=self.np.float32)
         tdf = self.np.array([[1, p, 0]], dtype=self.np.float32)      # 3 x fp32 = 12 B
-        arrays = self.sm._forward(ids, tdf, self.kv)
-        logits = self.np.asarray(arrays[0]).reshape(-1)
-        new_kv = arrays[1:]
-        if self.rule == "native":
-            # 原生 1-based：新 KV 就落在 out[p]，直接写回同一槽 p（不位移）
-            for j, nv in enumerate(new_kv):
-                self.kv[j][:, :, p, :] = nv[:, :, p, :]
-        elif p == slot + 1:
-            for j, nv in enumerate(new_kv):
-                self.kv[j][:, :, slot, :] = nv[:, :, p, :]
-        else:
-            self.kv = list(new_kv)
+        # 窄回读（2026-11-07）：只取新槽 out[p]（2 KiB/张量），不整块回读 58 MiB。
+        logits_arr, slots = self.sm._forward_narrow(ids, tdf, self.kv, p)
+        logits = self.np.asarray(logits_arr).reshape(-1)
+        target = p if (self.rule == "native" or p != slot + 1) else slot
+        for j, slot_value in enumerate(slots):
+            self.kv[j][0, :, target, :] = slot_value[0, :, :]
         self.n_steps += 1
         return int(self.np.argmax(logits))
 

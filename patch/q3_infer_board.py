@@ -34,6 +34,11 @@ from icraft import xrt
 
 Tensor = xrt.Tensor
 
+try:
+    import kv_io          # 同目录：窄回读工具（只读新 KV 槽，2026-11-07）
+except ImportError:       # 单独拷走驱动时允许缺席，窄路径会显式报错
+    kv_io = None
+
 
 class ModelConfig:
     config_path: str = "/root/qwen3/config/qwen3"
@@ -176,18 +181,38 @@ class DecodeOnlySessionManager:
     def sample_logits(self, logits: np.ndarray) -> int:
         return int(np.argmax(logits))
 
+    def _forward_narrow(self, input_ids: np.ndarray, token_dynamic_fm: np.ndarray,
+                        kv_cache: List[np.ndarray], pos: int):
+        """窄回读：只读 logits 与第 pos 槽的 KV（2 KiB/张量），不整块回读 58 MiB。
+
+        2026-11-07：图每步只更新一个槽，整块回读 56 MiB 是纯浪费；窄读让每步
+        回读从 ~58 MiB 降到 ~112 KiB，峰值内存随之下降（可脱离 swap）。
+        """
+        if kv_io is None:
+            raise RuntimeError('kv_io missing: narrow readback unavailable')
+        feed = self._create_feed_dict(input_ids, token_dynamic_fm, kv_cache)
+        tensors = self._numpy2Tensor(feed)
+        outputs = self.decode_session.forward(tensors)
+        for t in outputs:
+            t.waitForReady(datetime.timedelta(milliseconds=50000))
+        self.model.reset_device()
+        logits = Tensor2Numpy([outputs[0]])[0]
+        slots = [kv_io.read_slot(outputs[j + 1], pos)
+                 for j in range(self.model.config.n_layers * 2)]
+        del outputs
+        return logits, slots
+
     def run_prompt(self, prompt_tokens: List[int]) -> Tuple[int, List[np.ndarray]]:
         # 原生 1-based KV 布局（2026-11-07 板端实验）：图把 token 的新 KV 写在 out[pos]
-        # （pos=tdf[1]，从 1 起，slot0 不用）。这里整块保留 arrays[1:]，**不再下移一位**
-        # 到 slot i —— 下移会让后续 1-based 解码读到错槽，等价空上下文（退化到 508）。
+        # （pos=tdf[1]，从 1 起，slot0 不用）。窄回读只取该槽写回同一槽，不下移。
         kv_cache = self._prepare_kv_cache(1, self.model.config.max_decode_length)
         logits = None
         for i, token in enumerate(prompt_tokens):
             tdf = np.array([[1, i + 1, 0]], dtype=np.float32)
             ids = np.array([[token]], dtype=np.int64)
-            arrays = self._forward(ids, tdf, kv_cache)
-            kv_cache = arrays[1:]
-            logits = arrays[0].reshape(1, 1, -1)[:, 0, :]
+            logits, slots = self._forward_narrow(ids, tdf, kv_cache, i + 1)
+            for j, slot in enumerate(slots):
+                kv_io.write_slot(kv_cache[j], i + 1, slot)
             if (i + 1) % 10 == 0:
                 print("[prompt] %d/%d" % (i + 1, len(prompt_tokens)), flush=True)
         return self.sample_logits(logits), kv_cache
@@ -195,9 +220,10 @@ class DecodeOnlySessionManager:
     def run_decode(self, input_token: int, kv_cache: List[np.ndarray], seq_pos: int) -> Tuple[int, List[np.ndarray]]:
         tdf = np.array([[1, seq_pos, 0]], dtype=np.float32)
         ids = np.array([[input_token]], dtype=np.float32)
-        arrays = self._forward(ids, tdf, kv_cache)
-        logits = arrays[0].reshape(1, 1, -1)[:, 0, :]
-        return self.sample_logits(logits), arrays[1:]
+        logits, slots = self._forward_narrow(ids, tdf, kv_cache, seq_pos)
+        for j, slot in enumerate(slots):
+            kv_io.write_slot(kv_cache[j], seq_pos, slot)
+        return self.sample_logits(logits), kv_cache
 
 
 class Qwen3Generator:

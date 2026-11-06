@@ -197,6 +197,14 @@ python3 -m pip install --no-index --no-deps tokenizers-0.20.3-cp38-cp38-manylinu
 
 **速度**：0.63–0.93 tok/s（本评测在 swap 打开、`swap_used≈85MB` 状态下跑）；对比无 swap 时 Qwen3 8 token / 13.7 s ≈ **1.7 tok/s** ⇒ **swap 在用会让生成慢约一倍**。若要在板上提速，优先做"窄回读"（当前每步整块回读 58 MB KV）而不是靠 swap；swap 只该当 OOM 缓冲。证据：`workenv/ha-npu-ignite-2026-11-06/board-eval-{1..6}.json`。
 
+### 窄回读优化（2026-11-07，已落地）
+
+- **问题**：驱动 `_forward` 每步 `Tensor2Numpy(outputs)` 读 57 个输出（logits + 56×1 MiB KV = **58 MiB/步**），但每步其实只有**一个槽**是新的。
+- **实现**：新增 `patch/kv_io.py`——按字节偏移只读槽位（每 head 256 B × 8 = **2 KiB/张量**，56 张量 ≈ **112 KiB/步**）；`q3_infer_board.py` 增 `_forward_narrow`（只读 logits + 新槽），`run_prompt`/`run_decode` 改走窄路径；`board/npuserv_adapter.py` 的 `_step` 同步窄回读。本地单测 `board/test_kv_readback.py` **11/11**：offset 0 与非零（777）、pos 0/1/7/511 的窄读都与整块读逐字节一致。
+- **实测**（板 113，native，swap 打开）：32 token / 30.8 s = **1.04 tok/s**（整块回读同条件 0.93 tok/s，约 +12%）。
+- **边界（实测教训）**：窄回读**没有**消掉 swap 的必要性——`swapoff` 后重新 load+generate 仍被 OOM kill（`worker closed the connection mid-request`），且板子随后进入约 **15 分钟内存抖动**（sshd 无响应、ping 正常，后自行恢复）。**板端 1 GB 内存跑 Qwen3 仍需 1 GB swap 当 OOM 缓冲**；要再提速应减少 device 侧 56×1 MiB 输出分配（驱动/图层面），不是继续抠 host 回读。
+- 证据：`workenv/ha-npu-ignite-2026-11-06/board-narrow-n_gen_on.json`、`board-narrow-n_load_{on,off}.json`、`board-narrow-server.log`。
+
 ## 三条已知坑
 
 1. **件名不一致**：板上叫 `Q3V1-decoder_ZG.*`、库里叫 `Q3I-decoder_ZG.*`。10-28 逐字节核过：`.raw` 两边同为 `1081ddd7…`；`.json` 把板上那颗里唯一一处 `Q3V1` 换成 `Q3I` 后与库里这颗**逐字节相同** ⇒ 同一张图只差名字串。**按 `Q3I` 这名重推板＝把正本 raw 复制改名，不用重编**（`_ZG.json` 内没有 `.raw` 路径字段，只有 `params_md5`／`params_bytes`）。
