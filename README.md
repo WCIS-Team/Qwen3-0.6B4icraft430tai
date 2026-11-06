@@ -164,11 +164,23 @@ python3 -m pip install --no-index --no-deps tokenizers-0.20.3-cp38-cp38-manylinu
 
 **根因判定**：驱动 prompt 段把 `out[i+1]` **下移一位**写进 `kv slot i`（0-based），而解码段按 `seq_pos=prompt_length+step-1`（1-based）续写 ⇒ **两段 KV 索引基准不一致**，历史 KV 被读到错误槽位/空槽位，等价空上下文。Qwen2 用同样的下移能出通顺中文，说明它对这 1 位错位不敏感；Qwen3 不敏感度不足，于是恒重复。**不是 tokenizer、不是 pos_rule、也不是"图不消费 KV"**。
 
-**修复方向（未实现，待验证）**：统一成**原生 1-based**——prompt 也按 `out[pos]→slot pos` 原样透传（不位移），解码 `pos = prompt_len + 1` 起步；或统一 0-based（prompt 位移保持，解码也写/读同一套 0-based 槽并 `pos=slot`）。**验收必须整段 generate A/B**（同一 prompt 两方案 + 零 KV 对照，比对 ids/文本与重复率），不能只看首 token。
+**修复已落地并验收（2026-11-07，板 113）**：统一成**原生 1-based**——prompt 也按 `out[pos]→slot pos` 原样透传（不位移），解码 `pos = prompt_len + 1` 起步。改动三处：`patch/q3_infer_board.py`（`run_prompt` 不再下移、`generate` 用 `prompt_length + step`）、`board/npuserv_adapter.py`（新增 `pos_rule="native"` 并设为默认：prompt/decode 都 `tdf=[1,slot+1,0]`、写回 `out[p]` 同一槽）、板上 `models.json`（qwen3 的 defaults.pos_rule 改 native）。
 
-**边界与未完成**：整段 generate 的 A/B 对照本次**未跑成**——板端 1 GB 内存、无 swap，单 worker 生成峰值 `anon-rss≈580 MB`，被 OOM killer 连杀三次（`dmesg` pid 297030/297620/297778）；已把两版探针 adapter 与脚本留在 `workenv/migrate-real-preview/`（`q3_logits_probe.sh`、`q3_slot_probe.sh`、`npuserv_probe_adapter.py`），需**干净内存窗口**（MemAvailable 余量足够或重启后）再复跑。板上只用了 `/tmp` 临时目录，npuserv 本体与仓内驱动未改。
+**A/B 与端到端证据（同一次加载、同一 prompt）**：
 
-**状态**：`能加载、能出 token，未达可用`；根因已定位到 KV 索引基准，未改代码。2026-11-06 决定**搁置**，归 Qwen 模型线；npuserv 侧无改动。
+| 测试 | old（shift/vendor） | fixed（native） |
+|---|---|---|
+| ids `[9707,1879]` max_new=16 | `508×16`（复现历史退化） | `! This is a simple example of a Python script that prints "Hello World" …`（32 token 连贯） |
+| text「你好」max_new=24 | `198×24`（`"\n"` 复读） | `好的，用户发来消息“你好”，我需要先确认他们的意图。可能他们只是打招呼，或者` |
+| text「用一句话说明什么是边缘计算。」max_new=24 | —（未跑） | `嗯，用户让我用一句话说明什么是边缘计算。首先，我需要确定边缘计算的定义。边缘` |
+
+驱动独立跑（`q3_infer_board.py` 修后，prompt tokens=9）同样得到「好的，用户发来消息“你好”…」。板上速度约 **0.8–1.2 token/s**（开了 1 GB swapfile 后；swap 实测用量 ~85 MB）。
+
+**跑通条件（板端 OS 改动）**：整段 generate 峰值 `anon-rss≈580 MB`，1 GB 内存无 swap 时会被 OOM 连杀；本轮开了 `/swapfile`（1 GB，`chmod 600`、`mkswap`、`swapon`，并写入 `/etc/fstab` 持久化）。回滚＝`swapoff /swapfile && rm /swapfile` 并删 fstab 那行。**npuserv 代码未改**（只改 registry 的 `defaults.pos_rule` 与模型仓 adapter/驱动）。
+
+**证据**：`workenv/ha-npu-ignite-2026-11-06/board-q3_logits_probe.log`、`board-q3_slot_probe.log`、`board-native-prod_text.json`、`board-native-prod_ids.json`、`board-native-prod_cn.json`、`board-native-q3_fixed_run.log`；探针脚本 `workenv/migrate-real-preview/q3_*.sh`、`npuserv_probe_adapter.py`。
+
+**状态**：`能加载、能出连贯中文（0.6B 正常水平）`；退化根因与修复均已板端验证。
 
 ## 三条已知坑
 

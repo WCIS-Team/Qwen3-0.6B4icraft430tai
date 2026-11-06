@@ -7,11 +7,11 @@ inputs, 28 layers x 2 KV tensors, 8 kv heads, head_dim 128, `token_dynamic_fm` =
 because the ZG graph asks for 12 B where the vendor script feeds 8 B -- 台账 #196).  This
 adapter only turns a npuserv request into that driver's calls and back.
 
-VERIFICATION STATUS (2026-11-04): never executed on a board.  Not by this adapter, and not
-by q3_infer_board.py either -- the 件 passed the four-step precheck to `apply` in 75.1 s
-(台账 #212) and has produced zero tokens, because the driver was never on the board
-(#208-#211: the 10-14 push carried json + raw + tokenizer only).  A first board run pushes
-three things together: `npuserv/`, this adapter, and `patch/q3_infer_board.py`.
+VERIFICATION STATUS (2026-11-07): executed on the board.  A/B on the SAME load and the
+same ids prompt proved the defect and the fix: `vendor` (prompt un-shifts into 0-based
+slots, decode reads 1-based) -> `508 x16`; `native` (both arms 1-based, write out[pos] back
+into slot pos) -> coherent continuation (and a coherent Chinese answer end-to-end).
+`native` is now the load default; `vendor`/`uniform` stay for ablation.
 
 What IS settled without a board: the position rule.  The driver's own two loops disagree --
 `run_prompt` feeds tdf = slot + 1 and copies out[..., slot + 1, :] into slot, while
@@ -49,7 +49,7 @@ import adapter_lib                                             # noqa: E402
 
 IM_START = "<" + "|im_start" + "|>"
 IM_END = "<" + "|im_end" + "|>"
-RULES = ("vendor", "uniform")
+RULES = ("vendor", "uniform", "native")
 
 
 class Q3Engine(object):
@@ -88,7 +88,9 @@ class Q3Engine(object):
 
     def _pos(self, slot, phase):
         """The value fed in token_dynamic_fm[1] -- which is also where the graph writes."""
-        return slot + 1 if (self.rule == "uniform" or phase == "prompt") else slot
+        # native（2026-11-07 板端 A/B 验证）：图把新 KV 写在 out[pos]（1-based），
+        # 因此 prompt 与 decode 都用 pos=slot+1，缓存按原生 1-based 保存（不位移）。
+        return slot + 1 if (self.rule != "vendor" or phase == "prompt") else slot
 
     def _step(self, token, slot, phase):
         """One decoder-graph call for the token that belongs in cache slot `slot`."""
@@ -100,7 +102,11 @@ class Q3Engine(object):
         arrays = self.sm._forward(ids, tdf, self.kv)
         logits = self.np.asarray(arrays[0]).reshape(-1)
         new_kv = arrays[1:]
-        if p == slot + 1:
+        if self.rule == "native":
+            # 原生 1-based：新 KV 就落在 out[p]，直接写回同一槽 p（不位移）
+            for j, nv in enumerate(new_kv):
+                self.kv[j][:, :, p, :] = nv[:, :, p, :]
+        elif p == slot + 1:
             for j, nv in enumerate(new_kv):
                 self.kv[j][:, :, slot, :] = nv[:, :, p, :]
         else:
@@ -190,7 +196,7 @@ def load(params):
         Cfg.stop_ids = tuple(int(t) for t in params["stop_ids"])
     Cfg.dtype_kv = {"fp16": np.float16, "fp32": np.float32}.get(
         params.get("dtype_kv", "fp16"), np.float16)
-    rule = params.get("pos_rule", "vendor")
+    rule = params.get("pos_rule", "native")
     if rule not in RULES:
         raise ValueError("pos_rule %r not one of %s" % (rule, list(RULES)))
     Cfg.pos_rule = rule

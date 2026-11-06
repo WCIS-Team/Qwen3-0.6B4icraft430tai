@@ -177,17 +177,19 @@ class DecodeOnlySessionManager:
         return int(np.argmax(logits))
 
     def run_prompt(self, prompt_tokens: List[int]) -> Tuple[int, List[np.ndarray]]:
+        # 原生 1-based KV 布局（2026-11-07 板端实验）：图把 token 的新 KV 写在 out[pos]
+        # （pos=tdf[1]，从 1 起，slot0 不用）。这里整块保留 arrays[1:]，**不再下移一位**
+        # 到 slot i —— 下移会让后续 1-based 解码读到错槽，等价空上下文（退化到 508）。
         kv_cache = self._prepare_kv_cache(1, self.model.config.max_decode_length)
+        logits = None
         for i, token in enumerate(prompt_tokens):
             tdf = np.array([[1, i + 1, 0]], dtype=np.float32)
             ids = np.array([[token]], dtype=np.int64)
             arrays = self._forward(ids, tdf, kv_cache)
-            new_kv = arrays[1:]
-            for j, nv in enumerate(new_kv):
-                kv_cache[j][:, :, i, :] = nv[:, :, i + 1, :]
+            kv_cache = arrays[1:]
+            logits = arrays[0].reshape(1, 1, -1)[:, 0, :]
             if (i + 1) % 10 == 0:
                 print("[prompt] %d/%d" % (i + 1, len(prompt_tokens)), flush=True)
-        logits = arrays[0].reshape(1, 1, -1)[:, 0, :]
         return self.sample_logits(logits), kv_cache
 
     def run_decode(self, input_token: int, kv_cache: List[np.ndarray], seq_pos: int) -> Tuple[int, List[np.ndarray]]:
@@ -225,7 +227,7 @@ class Qwen3Generator:
                 print("[gen] EOS at step %d" % step, flush=True)
                 break
             t1 = time.time()
-            next_token, kv_cache = self.session_mgr.run_decode(next_token, kv_cache, prompt_length + step - 1)
+            next_token, kv_cache = self.session_mgr.run_decode(next_token, kv_cache, prompt_length + step)
             decode_ms.append((time.time() - t1) * 1000)
             generated.append(next_token)
             if step % 10 == 0:
