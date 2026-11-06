@@ -156,9 +156,19 @@ python3 -m pip install --no-index --no-deps tokenizers-0.20.3-cp38-cp38-manylinu
 2. **不是 pos_rule**：vendor 与 uniform 两臂逐 token 相同（都退化到 `198`）。
 3. **是 decode 步 KV 回喂缺陷**：首 token 随 prompt 变（ids→508、text→198），其后恒定重复，说明解码步看不到已生成 token。对照代码：adapter vendor 臂**整块替换** KV，与 `patch/q3_infer_board.py:run_decode` 返回 `arrays[1:]` 整块替换一致；uniform 臂走 `kv[slot] = out[p]` **切片写回**；**两种结构完全不同却同错 ⇒ 缺陷在 KV feed/布局（`past_key_values.i.key/value` 的命名/形状/dtype，或 out 索引 `p` 的语义），不在更新策略**。
 
-**下一步（未做，需板端单元级调试）**：逐步 dump `past_key_values.*` 校验和与 `arrays[1:]` 的对应关系，对照 vendored `run_prompt`（写 `kv[i]=out[i+1]`）与 `run_decode`（`seq_pos=prompt_length+step-1`，疑似与切片写回 slot 有 off-by-one）定位真因；坑 3 的 `padfix`（槽 0 全零 pad）在 Qwen3 上也从未板上验证。**证据**：`workenv/ha-npu-ignite-2026-11-06/qwen3_ignite.log`、`q3_ab.log`、`worker_3682c7c9.log`。
+**板端单元级实验（2026-11-07，已做）**：用"只读 logits、不落地整块 KV"的低内存探针，在板上得到三条硬结论——
 
-**状态**：`能加载、能出 token，未达可用`。2026-11-06 决定**搁置**，归 Qwen 模型线；npuserv 侧无改动。
+1. **图确实消费 past KV，位置也生效**：零 KV vs 人为把槽位 1 填 5.0（同 token/同位置）→ `max|Δlogits|=22.76`、argmax 变（508→13）；同 token 位置 2 vs 9 → `Δ=15.99`、argmax 变；`token_dynamic_fm` 第三元素 0→7 → `Δ=0.000`（**未被图使用**）。证据：`workenv/ha-npu-ignite-2026-11-06/board-q3_logits_probe.log`。
+2. **零 KV 时 argmax 就是 508**（与真实 ids 退化输出同 token）⇒ 真实运行里**历史 KV 实际等价于空**，不是"KV 没被消费"。
+3. **图把新 KV 写在 `out[pos]`（原生 1-based，slot 0 不用）**：prompt token 用 `tdf=[1,1,0]` 时新 KV 落在 `out[1]`（`out[0]` 全零）；decode token 在 pos=2 时落在 `out[2]`。证据：`board-q3_slot_probe.log`。
+
+**根因判定**：驱动 prompt 段把 `out[i+1]` **下移一位**写进 `kv slot i`（0-based），而解码段按 `seq_pos=prompt_length+step-1`（1-based）续写 ⇒ **两段 KV 索引基准不一致**，历史 KV 被读到错误槽位/空槽位，等价空上下文。Qwen2 用同样的下移能出通顺中文，说明它对这 1 位错位不敏感；Qwen3 不敏感度不足，于是恒重复。**不是 tokenizer、不是 pos_rule、也不是"图不消费 KV"**。
+
+**修复方向（未实现，待验证）**：统一成**原生 1-based**——prompt 也按 `out[pos]→slot pos` 原样透传（不位移），解码 `pos = prompt_len + 1` 起步；或统一 0-based（prompt 位移保持，解码也写/读同一套 0-based 槽并 `pos=slot`）。**验收必须整段 generate A/B**（同一 prompt 两方案 + 零 KV 对照，比对 ids/文本与重复率），不能只看首 token。
+
+**边界与未完成**：整段 generate 的 A/B 对照本次**未跑成**——板端 1 GB 内存、无 swap，单 worker 生成峰值 `anon-rss≈580 MB`，被 OOM killer 连杀三次（`dmesg` pid 297030/297620/297778）；已把两版探针 adapter 与脚本留在 `workenv/migrate-real-preview/`（`q3_logits_probe.sh`、`q3_slot_probe.sh`、`npuserv_probe_adapter.py`），需**干净内存窗口**（MemAvailable 余量足够或重启后）再复跑。板上只用了 `/tmp` 临时目录，npuserv 本体与仓内驱动未改。
+
+**状态**：`能加载、能出 token，未达可用`；根因已定位到 KV 索引基准，未改代码。2026-11-06 决定**搁置**，归 Qwen 模型线；npuserv 侧无改动。
 
 ## 三条已知坑
 
