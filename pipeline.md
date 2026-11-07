@@ -539,3 +539,5 @@ Q3K128_gen.toml（[parse] max_tokens_length=128 + [generate] json/raw 相对 cwd
 - 读数：max_new=32 → **2.01 tok/s**；max_new=64 → **2.13 tok/s**（无 swap）。
   每步 ~0.47s：DMA 28MB≈0.15s + NPU 计算 ~0.3s（计算成为新瓶颈——再提速要
   减层数/换 quant，超出本件范围）。
+  **swap 与速度无关已实测**（512 件有/无 swap 均 ~1 tok/s）——优化方向不是换页。
+  Qwen3 常驻与视觉相机互斥（apply 吃 CMA）：`docs/COEXISTENCE.md`。

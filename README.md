@@ -223,3 +223,13 @@ python3 -m pip install --no-index --no-deps tokenizers-0.20.3-cp38-cp38-manylinu
 **2.13 tok/s**（原 1.04）。上下文窗口同步缩到 128（prompt+生成 ≤128 token，
 语音单轮场景够用）。registry defaults 已指 `decode_k128` 件；回退＝删 defaults
 的 `json/raw/max_decode_length`。
+
+**瓶颈判定（实测定案）**：swap 与速度**无关**（512 件有 swap 1.04 / 无 swap 1.08、
+0.90 tok/s）；K128 后每步 ~0.47s = KV DMA 28MB ≈0.15s + **NPU 计算 ~0.3s**——计算
+成为新瓶颈，再提速需减层数/换量化，超出本件范围。LLM 常驻与视觉相机互斥（apply 吃
+CMA，实测详见 `docs/COEXISTENCE.md`）。
+
+**瓶颈判定（实测定案）**：swap 与速度**无关**（512 件有 swap 1.04 / 无 swap 1.08、
+0.90 tok/s）；K128 后每步 ~0.47s = KV DMA 28MB ≈0.15s + **NPU 计算 ~0.3s**——计算
+成为新瓶颈，再提速需减层数/换量化，超出本件范围。LLM 常驻与视觉相机互斥（apply 吃
+CMA，实测详见 `docs/COEXISTENCE.md`）。
