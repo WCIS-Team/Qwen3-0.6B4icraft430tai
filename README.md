@@ -214,3 +214,12 @@ python3 -m pip install --no-index --no-deps tokenizers-0.20.3-cp38-cp38-manylinu
 ## 相关（项目内部路径，外部读者可忽略）
 
 `wiki/PL/MOD/llm/qwen3-0.6b.md`（操作记录与对照表）／`wiki/PL/MOD/llm/Qwen3-Instruct按Qwen3配方迁移.md`（SOP）／`wiki/PL/MOD/llm/Qwen3按厂商Qwen2配方迁移.md`（原理与证据分级）／`wiki/PS/板端我方代码与产物台账.md`（板端逐件登记，`#208`～`#213` 是本线上板那批）。
+
+
+## K128：KV 深度重编译（2026-11-07）——2.13 tok/s（原 0.93）
+
+`max_tokens_length` 512→128 重编译（pipeline.md §9 全流程），KV [1,8,128,128]，
+每步 KV DMA 112MB→28MB。语义与校机 HF 参考 26/26 全等；板上 max_new=64 →
+**2.13 tok/s**（原 1.04）。上下文窗口同步缩到 128（prompt+生成 ≤128 token，
+语音单轮场景够用）。registry defaults 已指 `decode_k128` 件；回退＝删 defaults
+的 `json/raw/max_decode_length`。
