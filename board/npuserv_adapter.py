@@ -158,7 +158,7 @@ class Q3Engine(object):
         pass
 
 
-def load(params):
+def load(params, device=None):
     alt = params.get("driver_dir")
     if alt:
         # This adapter sits next to a copy of the driver and also searches ../patch,
@@ -199,7 +199,7 @@ def load(params):
     cfg = Cfg()
     adapter_lib.log("loading tokenizer + device + decoder net for Qwen3")
     model = Q3.IcraftModel(cfg)
-    sm = Q3.DecodeOnlySessionManager(model)      # does load_model + init_device + apply
+    sm = Q3.DecodeOnlySessionManager(model, device=device)  # device injected => no second openDevice
     return Q3Engine(np, cfg, model, sm, params)
 
 

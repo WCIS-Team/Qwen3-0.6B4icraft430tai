@@ -105,8 +105,13 @@ class IcraftModel:
             print("[warn] tokenizer load failed: %r" % e, flush=True)
         return self
 
-    def init_device(self):
+    def init_device(self, device=None):
         if self.device is not None:
+            return self
+        if device is not None:
+            # multi-resident：复用外部注入的 device（npuserv resident worker 共享），
+            # 不再自己 openDevice——重复 openDevice 会破坏其它 session 的 DMA 通道
+            self.device = device
             return self
         self.device = openDevice(self.config.run_backend, self.config.ip,
                                  self.config.mmu_mode, self.config.cuda_mode)
@@ -123,9 +128,9 @@ class IcraftModel:
 
 
 class DecodeOnlySessionManager:
-    def __init__(self, model: IcraftModel):
+    def __init__(self, model: IcraftModel, device=None):
         self.model = model
-        self.model.load_model().init_device()
+        self.model.load_model().init_device(device)
         self.decode_network = None
         self.decode_session = None
         self.kv_dtype = None
